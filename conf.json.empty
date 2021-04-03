@@ -1,0 +1,9 @@
+{
+  "homeserver": "",
+  "username": "",
+  "password": "",
+  "client_name": "",
+  "welcome_text": "",
+  "commander": "",
+  "loglevel":= "ERROR"
+}
