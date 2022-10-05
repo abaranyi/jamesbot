@@ -9,9 +9,14 @@ James is a matrix bot prototype writen in go.
 - Quit: type quit in promt
 
 ## Current Version
-Version 0.1
+Version 0.1.1
 ## History
-0.1 Initial version.
+- 0.1 Initial version.
+- 0.1.1 First update
+
+  - Mautrix related updates
+
+  - Some error handling improvement
 ## Features:
 - Connect into matrix server
 - Send welcome message to the rooms where already joined.

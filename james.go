@@ -4,22 +4,23 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto"
+	"maunium.net/go/mautrix/crypto/olm"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+	"maunium.net/go/mautrix/util/dbutil"
 
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/op/go-logging"
 )
 
-//logger
+// logger
 var log = logging.MustGetLogger("james")
 var format = logging.MustStringFormatter(
 	`%{color}%{time:15:04:05.000} %{shortfunc} ▶ %{level:.4s} %{id:03x}%{color:reset} %{message}`,
@@ -100,16 +101,16 @@ func sendEncrypted(mach *crypto.OlmMachine, cli *mautrix.Client, roomID id.RoomI
 	if err == crypto.SessionExpired || err == crypto.SessionNotShared || err == crypto.NoGroupSession {
 		err = mach.ShareGroupSession(roomID, getUserIDs(cli, roomID))
 		if err != nil {
-			panic(err)
+			log.Critical(err)
 		}
 		encrypted, err = mach.EncryptMegolmEvent(roomID, event.EventMessage, content)
 	}
 	if err != nil {
-		panic(err)
+		log.Critical(err)
 	}
 	_, err = cli.SendMessageEvent(roomID, event.EventEncrypted, encrypted)
 	if err != nil {
-		panic(err)
+		log.Critical(err)
 	}
 }
 
@@ -175,7 +176,7 @@ func main() {
 	log.Info("Login successful")
 	myname, err := cli.GetOwnDisplayName()
 	if err != nil {
-		panic(err)
+		log.Error(err)
 	}
 	defer func() {
 
@@ -187,19 +188,32 @@ func main() {
 	}()
 
 	log.Info("Init crypto module")
-	db, err := sql.Open("sqlite3", "mydb.db")
+	rawDB, err := sql.Open("sqlite3", "file::memory:?cache=shared")
+
 	if err != nil {
-		panic(err)
+		log.Error("Error opening db: %v", err)
 	}
-	logger := Logger{}
-	cryptoStore := crypto.NewSQLCryptoStore(db, "sqlite3", cli.DeviceID.String(), cli.DeviceID, []byte(cli.DeviceID.String()+"bob"), &logger)
+	db, err := dbutil.NewWithDB(rawDB, "sqlite3")
 	if err != nil {
-		panic(err)
+		log.Error("Error opening db: %v", err)
 	}
-	if err = cryptoStore.CreateTables(); err != nil {
-		panic(err)
+
+	sqlStore := crypto.NewSQLCryptoStore(db, nil, "accid", cli.DeviceID, []byte(cli.DeviceID.String()+"bob"))
+
+	if err = sqlStore.Upgrade(); err != nil {
+		log.Error("Error creating tables: %v", err)
 	}
-	mach := crypto.NewOlmMachine(cli, &Logger{}, cryptoStore, &StateStore{})
+	userID := id.UserID("@" + config.Username + ":" + config.Homeserver)
+
+	mk, _ := olm.NewPkSigning()
+	ssk, _ := olm.NewPkSigning()
+	usk, _ := olm.NewPkSigning()
+
+	sqlStore.PutCrossSigningKey(userID, id.XSUsageMaster, mk.PublicKey)
+	sqlStore.PutCrossSigningKey(userID, id.XSUsageSelfSigning, ssk.PublicKey)
+	sqlStore.PutCrossSigningKey(userID, id.XSUsageUserSigning, usk.PublicKey)
+
+	mach := crypto.NewOlmMachine(cli, &Logger{}, sqlStore, &StateStore{})
 	err = mach.Load()
 	if err != nil {
 		panic(err)
@@ -212,7 +226,7 @@ func main() {
 		panic(err)
 	}
 	log.Info("Send welcome message to joined rooms")
-	if resp != nil {
+	if resp != nil && config.Welcome_text != "" {
 		for _, room := range resp.JoinedRooms {
 			if EncryptionIsNeeded(cli, room) {
 				go sendEncrypted(mach, cli, room, config.Welcome_text)
@@ -225,7 +239,7 @@ func main() {
 
 		}
 	}
-	fmt.Println("Bot started")
+	log.Info("Bot started")
 	syncer := cli.Syncer.(*mautrix.DefaultSyncer)
 	syncer.OnSync(func(resp *mautrix.RespSync, since string) bool {
 		mach.ProcessSyncResponse(resp, since)
@@ -279,6 +293,8 @@ func main() {
 			if err != nil {
 				log.Error(err)
 			}
+			// Ignore events from before joined the room
+			start = time.Now().UnixNano() / 1_000_000
 		} else {
 			log.Info("Event:", ev.Content.AsMember().Membership)
 		}
@@ -288,7 +304,7 @@ func main() {
 	go func() {
 		err = cli.Sync()
 		if err != nil {
-			panic(err)
+			log.Critical(err)
 		}
 	}()
 	//logout
@@ -297,7 +313,7 @@ func main() {
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
 		if line == "quit" {
-			fmt.Println("Logout")
+			log.Info("Logout")
 			break
 		}
 	}
